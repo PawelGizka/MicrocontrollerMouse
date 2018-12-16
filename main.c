@@ -18,7 +18,7 @@
 #define OUT_X 0x29
 #define OUT_Y 0x2B
 #define OUT_Z 0x2D
-#define LIS35DE_ADDR 0x1D
+#define LIS35DE_ADDR 0x1C
 
 #define SEND_BUFFER_SIZE 400
 
@@ -55,10 +55,17 @@ int currentWaitValue = 0;
 
 volatile irq_level_t currentLevel;
 
-void intToChar(char* buffer, int value, int offset) {
-    for (int j = offset; value != 0 && j > 0; j--) {
-        buffer[j] = (value % 10) + '0';
-        value /= 10;
+int intToChar(char* buffer, int value, int offset) {
+    if (value != 0) {
+        int j = offset;
+        for (; value != 0 && j > 0; j--) {
+            buffer[j] = (value % 10) + '0';
+            value /= 10;
+        }
+        return j;
+    } else {
+        buffer[offset] = 0 + '0';
+        return offset - 1;
     }
 }
 
@@ -198,15 +205,18 @@ void sendAccelerationToUART() {
         num[j] = 0;
     }
 
-    intToChar(num, xAxisAcceleration, 29);
-    intToChar(num, yAxisAcceleration, 25);
-
-    num[26] = ',';
-
+    int nextPos = intToChar(num, xAxisAcceleration, 29);
+    num[nextPos] = ',';
+    nextPos = intToChar(num, yAxisAcceleration, nextPos-1);
     num[30] = '\n';
     num[31] = '\r';
 
-    sendToBuffer(num);
+    char buf[31 - nextPos];
+    for (int i = nextPos + 1, j = 0; i < 32; i++, j++) {
+        buf[j] = num[i];
+    }
+
+    sendToBuffer(buf);
     sendBufferToDMA();
 }
 
@@ -417,39 +427,33 @@ void I2C1_ER_IRQHandler(void) {
 }
 
 void configureCounter() {
-    //Włączenie taktowania układu licznika
+    //enable counter
     RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
 
-    //zliczaj w gore
+    //count up
     TIM3->CR1 = 0;
 
-    //Skonfigurowanie preskalera i zakresu zliczania
+    //configure prescaller and count range
     TIM3->PSC = PRESCALER_VALUE;
     TIM3->ARR = COUNTER_VALUE;//10s
 
-    //wymuszenie zdarzenia uaktualnienia
+    //force update interrupt
     TIM3->EGR = TIM_EGR_UG;
 
-    //Uruchomienie licznika
+    //turn on counter
     TIM3->CR1 |= TIM_CR1_CEN;
 
-    //wlaczenie przerwania
-    TIM3->SR = ~(TIM_SR_UIF | TIM_SR_CC1IF);
-    TIM3->DIER = TIM_DIER_UIE | TIM_DIER_CC1IE;
+    //turn on interrupts
+    TIM3->SR = ~TIM_SR_UIF;
+    TIM3->DIER = TIM_DIER_UIE;
 
     NVIC_EnableIRQ(TIM3_IRQn);
-
-
 }
 
 void TIM3_IRQHandler(void) {
     uint32_t it_status = TIM3->SR & TIM3->DIER;
     if (it_status & TIM_SR_UIF) {
         TIM3->SR = ~TIM_SR_UIF;
-        //uaktualnienie
-    }
-    if (it_status & TIM_SR_CC1IF) {
-        TIM3->SR = ~TIM_SR_CC1IF;
         if (accelerometerReady) {
             currentWaitValue++;
 
