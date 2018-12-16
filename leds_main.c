@@ -17,9 +17,11 @@
 #define OUT_Z 0x2D
 #define LIS35DE_ADDR 0x1D
 
-#define SEND_BUFFER_SIZE 200
+#define SEND_BUFFER_SIZE 400
 
 #define MAX_WAIT_VALUE 40000
+
+int debug = 0;
 
 char sendBuffer[SEND_BUFFER_SIZE];
 int sendBufferPosition = 0;
@@ -27,10 +29,16 @@ int charsToSend = 0;
 
 char tempBuffer[SEND_BUFFER_SIZE];
 
-volatile int gyroReady = 0;
+volatile int accelerometerReady = 0;
 
-int wasDataSend = 0;
-int wasRepeatedStart = 0;
+int dataWasSend = 0;
+int firstBtf = 1;
+
+int accelerationReadPending = 0;
+int readXAxis = 0;
+int xAxisAcceleration = 0;
+int yAxisAcceleration = 0;
+int receivePhase = 0;
 
 volatile irq_level_t currentLevel;
 
@@ -151,7 +159,7 @@ void configureUsartAndDma() {
 
 }
 
-void configureGyro() {
+void configureAccelerometer() {
     RCC->APB1ENR |= RCC_APB1ENR_I2C1EN;
 
     GPIOafConfigure(GPIOB, 8, GPIO_OType_OD,
@@ -178,354 +186,217 @@ void configureGyro() {
 
 }
 
-void saveValueToRegister() {
-    //Zainicjuj transmisję sygnału START
-    I2C1->CR1 |= I2C_CR1_START;
-
-    /*
-    //Czekaj na zakończenie transmisji bitu START, co jest
-    //sygnalizowane ustawieniem bitu SB (ang.start bit) w rejestrze SR1,
-    //czyli czekaj na spełnienie warunku
-    int i = 0;
-    while (!(I2C1->SR1 & I2C_SR1_SB) && i <= MAX_WAIT_VALUE) {
-        __NOP();
-        i++;
-    }
-    if (i >= MAX_WAIT_VALUE) {
-        sendToBuffer("cond 1 failed\n\r");
-        sendBufferToDMA();
+void sendAccelerationToUART() {
+    char num[32];
+    for (int j = 0; j < 32; j++) {
+        num[j] = 0;
     }
 
-    //Zainicjuj wysyłanie 7-bitowego adresu slave’a, tryb MT
-    I2C1->DR = LIS35DE_ADDR << 1;
+    intToChar(num, xAxisAcceleration, 29);
+    intToChar(num, yAxisAcceleration, 25);
 
-    //Czekaj na zakończenie transmisji adresu, ustawienie bitu ADDR (ang.address sent)
-    // w rejestrze SR1, warunek
-    i = 0;
-    while (!(I2C1->SR1 & I2C_SR1_ADDR) && i <= MAX_WAIT_VALUE) {
-        __NOP();
-        i++;
-    }
-    if (i >= MAX_WAIT_VALUE) {
-        sendToBuffer("cond 2 failed\n\r");
-        sendBufferToDMA();
-    }
+    num[26] = ',';
 
-    //Skasuj bit ADDR przez odczytanie rejestru SR2 po odczytaniu rejestru SR1
-    I2C1->SR2;
+    num[30] = '\n';
+    num[31] = '\r';
 
-    //Zainicjuj wysyłanie 8-bitowego numeru rejestru slave’a
-    I2C1->DR = CTRL_REG1;
-
-    //Czekaj na opróżnienie kolejki nadawczej, czyli na ustawienie bitu TXE
-    // (ang. transmitter data register empty) w rejestrze SR1, warunek
-    i = 0;
-    while (!(I2C1->SR1 & I2C_SR1_TXE) && i <= MAX_WAIT_VALUE) {
-        __NOP();
-    }
-    if (i >= MAX_WAIT_VALUE) {
-        sendToBuffer("cond 3 failed\n\r");
-        sendBufferToDMA();
-    }
-
-    uint32_t powerUp = 1 << 6;
-    uint32_t zEnabled = 1 << 2;
-    uint32_t yEnabled = 1 << 1;
-    uint32_t xEnabled = 1;
-    uint32_t reqValue =  (zEnabled | yEnabled | xEnabled | powerUp);
-
-    //Wstaw do kolejki nadawczej 8-bitową wartość zapisywaną do rejestru slave’a
-    I2C1->DR = reqValue;
-
-    //Czekaj na zakończenie transmisji, czyli na ustawienie bitu BTF
-    // (ang. byte transfer finished) w rejestrze SR1, warunek
-    i = 0;
-    while (!(I2C1->SR1 & I2C_SR1_BTF) && i <= MAX_WAIT_VALUE) {
-        __NOP();
-    }
-    if (i >= MAX_WAIT_VALUE) {
-        sendToBuffer("cond 4 failed\n\r");
-        sendBufferToDMA();
-    }
-
-    //Zainicjuj transmisję sygnału STOP
-    I2C1->CR1 |= I2C_CR1_STOP;
-     */
+    sendToBuffer(num);
+    sendBufferToDMA();
 }
 
-void readFromGyro() {
-    //Zainicjuj transmisję sygnału START
+void saveConfigurationToAccelerometer() {
+    dataWasSend = 0;
+    firstBtf = 1;
     I2C1->CR1 |= I2C_CR1_START;
-
-    /*
-    //Czekaj na ustawienie bituSBw rejestrze SR1, warunek
-    int i = 0;
-    while (!(I2C1->SR1 & I2C_SR1_SB) && i <= MAX_WAIT_VALUE) {
-        __NOP();
-        i++;
-    }
-    if (i >= MAX_WAIT_VALUE) {
-        sendToBuffer("cond 5 failed\n\r");
-        sendBufferToDMA();
-    }
-
-    //Zainicjuj wysyłanie 7-bitowego adresu slave’a, tryb MT
-    I2C1->DR = LIS35DE_ADDR << 1;
-
-    //Czekaj na zakończenie transmisji adresu, warunek
-    i = 0;
-    while (!(I2C1->SR1 & I2C_SR1_ADDR) && i <= MAX_WAIT_VALUE) {
-        __NOP();
-        i++;
-    }
-    if (i >= MAX_WAIT_VALUE) {
-        sendToBuffer("cond 6 failed\n\r");
-        sendBufferToDMA();
-    }
-
-    //Skasuj bitADDR
-    I2C1->SR2;
-
-    //Zainicjuj wysyłanie numeru rejestru slave’a
-    I2C1->DR = OUT_Y;
-
-    //Czekaj na zakończenie transmisji, czyli na ustawienie bitu BTF (ang. byte transfer finished) w rejestrze SR1,
-    // czyli na spełnienie warunku
-    i = 0;
-    while (!(I2C1->SR1 & I2C_SR1_BTF) && i <= MAX_WAIT_VALUE) {
-        __NOP();
-        i++;
-    }
-    if (i >= MAX_WAIT_VALUE) {
-        sendToBuffer("cond 7 failed\n\r");
-        sendBufferToDMA();
-    }
-
-    //Zainicjuj transmisję sygnału REPEATED START
-    I2C1->CR1 |= I2C_CR1_START;
-
-    //Czekaj na ustawienie bitu SB w rejestrze SR1, warunek
-    i = 0;
-    while (!(I2C1->SR1 & I2C_SR1_SB) && i <= MAX_WAIT_VALUE) {
-        __NOP();
-        i++;
-    }
-    if (i >= MAX_WAIT_VALUE) {
-        sendToBuffer("cond 8 failed\n\r");
-        sendBufferToDMA();
-    }
-
-    //Zainicjuj wysyłanie 7-bitowego adresu slave’a, tryb MR
-    I2C1->DR = (LIS35DE_ADDR << 1) | 1U;
-
-
-    //Ustaw, czy po odebraniu pierwszego bajtu ma być wysłany sygnał ACK czy NACK
-    //Ponieważ ma być odebrany tylko jeden bajt, ustaw wysłanie sygnału NACK, zerując bit ACK
-    I2C1->CR1 &= ~I2C_CR1_ACK;
-
-    //Czekaj na zakończenie transmisji adresu, warunek
-    i = 0;
-    while (!(I2C1->SR1 & I2C_SR1_ADDR) && i <= MAX_WAIT_VALUE) {
-        __NOP();
-        i++;
-    }
-    if (i >= MAX_WAIT_VALUE) {
-        sendToBuffer("cond 9 failed\n\r");
-        sendBufferToDMA();
-    }
-
-    //Skasuj bit ADDR
-    I2C1->SR2;
-
-    //Zainicjuj transmisję sygnału STOP, aby został wysłany po
-    //odebraniu ostatniego (w tym przypadku jedynego) bajtu
-    I2C1->CR1 |= I2C_CR1_STOP;
-
-    //Czekaj na ustawienie bitu RXNE (ang. receiver data register not empty) w rejestrze SR1, warunek
-    i = 0;
-    while (!(I2C1->SR1 & I2C_SR1_RXNE) && i <= MAX_WAIT_VALUE) {
-        __NOP();
-        i++;
-    }
-    if (i >= MAX_WAIT_VALUE) {
-        sendToBuffer("cond 10 failed\n\r");
-        sendBufferToDMA();
-    }
-
-    //Odczytaj odebraną 8-bitową wartość
-    int value = I2C1->DR;
-
-    return value;
-    */
 }
 
-int firstBtf = 1;
+void readXAxisAcceleration() {
+    readXAxis = 1;
+    accelerationReadPending = 1;
+    receivePhase = 0;
 
+    I2C1->CR1 |= I2C_CR1_START;
+}
 
-void I2C1_EV_IRQHandler(void) {
-    if (gyroReady) {
-        if (I2C1->SR1 & I2C_SR1_SB) {
-            if (!wasRepeatedStart) {
-                //1
-                sendToBuffer("I2C_SR1_SB 1\n\r");
-                sendBufferToDMA();
+void readYAxisAcceleration() {
+    readXAxis = 0;
+    accelerationReadPending = 1;
+    receivePhase = 0;
 
-                //Zainicjuj wysyłanie 7-bitowego adresu slave’a, tryb MT
-                I2C1->DR = LIS35DE_ADDR << 1;
-            }  else {
-                //4
-                sendToBuffer("I2C_SR1_SB 4\n\r");
-                sendBufferToDMA();
+    I2C1->CR1 |= I2C_CR1_START;
+}
 
-                //Zainicjuj wysyłanie 7-bitowego adresu slave’a, tryb MR
-                I2C1->DR = (LIS35DE_ADDR << 1) | 1U;
-
-
-                //Ustaw, czy po odebraniu pierwszego bajtu ma być wysłany sygnał ACK czy NACK
-                //Ponieważ ma być odebrany tylko jeden bajt, ustaw wysłanie sygnału NACK, zerując bit ACK
-                I2C1->CR1 &= ~I2C_CR1_ACK;
-            }
-
-        }
-
-        if (I2C1->SR1 & I2C_SR1_ADDR) {
-            if (!wasRepeatedStart) {
-                //2
-                sendToBuffer("I2C_SR1_ADDR 2\n\r");
-                sendBufferToDMA();
-
-                //Skasuj bit ADDR przez odczytanie rejestru SR2 po odczytaniu rejestru SR1
-                I2C1->SR2;
-
-                //Zainicjuj wysyłanie numeru rejestru slave’a
-                I2C1->DR = OUT_Y;
-            } else {
-                //5
-                sendToBuffer("I2C_SR1_ADDR 5\n\r");
-                sendBufferToDMA();
-
-                I2C1->CR2 |= I2C_CR2_ITBUFEN;
-
-                //Skasuj bit ADDR
-                I2C1->SR2;
-
-                //Zainicjuj transmisję sygnału STOP, aby został wysłany po
-                //odebraniu ostatniego (w tym przypadku jedynego) bajtu
-                I2C1->CR1 |= I2C_CR1_STOP;
-            }
-        }
-
-
-        if (I2C1->SR1 & I2C_SR1_BTF) {
-            //3
-            sendToBuffer("I2C_SR1_BTF 3\n\r");
-            sendBufferToDMA();
-
-            if (firstBtf) {
-                wasRepeatedStart = 1;
-
-                //Zainicjuj transmisję sygnału REPEATED START
-                I2C1->CR1 |= I2C_CR1_START;
-            } else {
-
-            }
-
-        }
-
-        if (I2C1->SR1 & I2C_SR1_RXNE) {
-            //6
-            sendToBuffer("I2C_SR1_RXNE 6\n\r");
-            sendBufferToDMA();
-
-            //Odczytaj odebraną 8-bitową wartość
-            int value = I2C1->DR;
-
-            if (value != 0) {
-                char num[32];
-                for (int j = 0; j < 32; j++) {
-                    num[j] = 0;
-                }
-
-                intToChar(num, value, 29);
-
-                num[30] = '\n';
-                num[31] = '\r';
-
-                sendToBuffer(num);
-
-                sendToBuffer("dziala 1\n\r");
-            } else {
-                sendToBuffer("dziala 2\n\r");
-            }
-            sendBufferToDMA();
-        }
-
-
-    } else {
-        int samePass = 0;
-        if (I2C1->SR1 & I2C_SR1_SB) {
-
+void handleAccelerometerSetup() {
+    if (I2C1->SR1 & I2C_SR1_SB) {
+        if (debug) {
             sendToBuffer("I2C_SR1_SB\n\r");
             sendBufferToDMA();
+        }
+
+        //Zainicjuj wysyłanie 7-bitowego adresu slave’a, tryb MT
+        I2C1->DR = LIS35DE_ADDR << 1;
+    }
+
+    if (I2C1->SR1 & I2C_SR1_ADDR) {
+        if (debug) {
+            sendToBuffer("I2C_SR1_ADDR\n\r");
+            sendBufferToDMA();
+        }
+
+        I2C1->CR2 |= I2C_CR2_ITBUFEN;
+        dataWasSend = 1;
+
+        //Skasuj bit ADDR przez odczytanie rejestru SR2 po odczytaniu rejestru SR1
+        I2C1->SR2;
+
+        //Zainicjuj wysyłanie 8-bitowego numeru rejestru slave’a
+        I2C1->DR = CTRL_REG1;
+    }
+
+    if ((I2C1->SR1 & I2C_SR1_TXE) && dataWasSend) {
+        if (debug) {
+            sendToBuffer("I2C_SR1_TXE\n\r");
+            sendBufferToDMA();
+        }
+
+        I2C1->CR2 &= (~((uint32_t)0x00000000)) ^ I2C_CR2_ITBUFEN;
+        dataWasSend = 0;
+
+        uint32_t powerUp = 1 << 6;
+        uint32_t zEnabled = 1 << 2;
+        uint32_t yEnabled = 1 << 1;
+        uint32_t xEnabled = 1;
+        uint32_t reqValue =  (zEnabled | yEnabled | xEnabled | powerUp);
+
+        //Wstaw do kolejki nadawczej 8-bitową wartość zapisywaną do rejestru slave’a
+        I2C1->DR = reqValue;
+    }
+
+    if (I2C1->SR1 & I2C_SR1_BTF) {
+        if (debug) {
+            sendToBuffer("I2C_SR1_BTF\n\r");
+            sendBufferToDMA();
+        }
+
+        if (firstBtf) {
+            firstBtf = 0;
+            I2C1->CR1 |= I2C_CR1_STOP;
+        } else {
+            accelerometerReady = 1;
+            firstBtf = 1;
+        }
+    }
+}
+
+void handleAccelerometerRead() {
+    if (I2C1->SR1 & I2C_SR1_SB) {
+        if (!receivePhase) {
+            //1
+            if (debug) {
+                sendToBuffer("I2C_SR1_SB 1\n\r");
+                sendBufferToDMA();
+            }
 
             //Zainicjuj wysyłanie 7-bitowego adresu slave’a, tryb MT
             I2C1->DR = LIS35DE_ADDR << 1;
+        }  else {
+            //4
+            if (debug) {
+                sendToBuffer("I2C_SR1_SB 4\n\r");
+                sendBufferToDMA();
+            }
 
+            //Zainicjuj wysyłanie 7-bitowego adresu slave’a, tryb MR
+            I2C1->DR = (LIS35DE_ADDR << 1) | 1U;
+
+            //Ustaw, czy po odebraniu pierwszego bajtu ma być wysłany sygnał ACK czy NACK
+            //Ponieważ ma być odebrany tylko jeden bajt, ustaw wysłanie sygnału NACK, zerując bit ACK
+            I2C1->CR1 &= ~I2C_CR1_ACK;
         }
 
-        if (I2C1->SR1 & I2C_SR1_ADDR) {
-            sendToBuffer("I2C_SR1_ADDR\n\r");
-            sendBufferToDMA();
+    }
 
-            samePass = 1;
-
-            I2C1->CR2 |= I2C_CR2_ITBUFEN;
-            wasDataSend = 1;
+    if (I2C1->SR1 & I2C_SR1_ADDR) {
+        if (!receivePhase) {
+            //2
+            if (debug) {
+                sendToBuffer("I2C_SR1_ADDR 2\n\r");
+                sendBufferToDMA();
+            }
 
             //Skasuj bit ADDR przez odczytanie rejestru SR2 po odczytaniu rejestru SR1
             I2C1->SR2;
 
-            //Zainicjuj wysyłanie 8-bitowego numeru rejestru slave’a
-            I2C1->DR = CTRL_REG1;
-        }
+            //Zainicjuj wysyłanie numeru rejestru slave’a
 
-        if ((I2C1->SR1 & I2C_SR1_TXE) && wasDataSend && !samePass) {
-            sendToBuffer("I2C_SR1_TXE\n\r");
-            sendBufferToDMA();
-
-            I2C1->CR2 &= (~((uint32_t)0x00000000)) ^ I2C_CR2_ITBUFEN;
-            wasDataSend = 0;
-
-            uint32_t powerUp = 1 << 6;
-            uint32_t zEnabled = 1 << 2;
-            uint32_t yEnabled = 1 << 1;
-            uint32_t xEnabled = 1;
-            uint32_t reqValue =  (zEnabled | yEnabled | xEnabled | powerUp);
-
-            //Wstaw do kolejki nadawczej 8-bitową wartość zapisywaną do rejestru slave’a
-            I2C1->DR = reqValue;
-        }
-
-        if (I2C1->SR1 & I2C_SR1_BTF) {
-            sendToBuffer("I2C_SR1_BTF\n\r");
-            sendBufferToDMA();
-
-            if (firstBtf) {
-                firstBtf = 0;
-                I2C1->CR1 |= I2C_CR1_STOP;
+            if (readXAxis) {
+                I2C1->DR = OUT_X;
             } else {
-                gyroReady = 1;
-                firstBtf = 1;
-
-                int i = 0;
-                while (i < 10000000) {
-                    __NOP();
-                    i++;
-                }
-
-                readFromGyro();
+                I2C1->DR = OUT_Y;
             }
+        } else {
+            //5
+            if (debug) {
+                sendToBuffer("I2C_SR1_ADDR 5\n\r");
+                sendBufferToDMA();
+            }
+
+            I2C1->CR2 |= I2C_CR2_ITBUFEN;
+
+            //Skasuj bit ADDR
+            I2C1->SR2;
+
+            //Zainicjuj transmisję sygnału STOP, aby został wysłany po
+            //odebraniu ostatniego (w tym przypadku jedynego) bajtu
+            I2C1->CR1 |= I2C_CR1_STOP;
         }
+    }
+
+
+    if (I2C1->SR1 & I2C_SR1_BTF) {
+        //3
+        if (debug) {
+            sendToBuffer("I2C_SR1_BTF 3\n\r");
+            sendBufferToDMA();
+        }
+
+        receivePhase = 1;
+
+        //Zainicjuj transmisję sygnału REPEATED START
+        I2C1->CR1 |= I2C_CR1_START;
+
+    }
+
+    if (I2C1->SR1 & I2C_SR1_RXNE) {
+        //6
+        if (debug) {
+            sendToBuffer("I2C_SR1_RXNE 6\n\r");
+            sendBufferToDMA();
+        }
+
+        //Odczytaj odebraną 8-bitową wartość
+        if (readXAxis) {
+            xAxisAcceleration = I2C1->DR;
+        } else {
+            yAxisAcceleration = I2C1->DR;
+        }
+
+        if (readXAxis) {
+            readYAxisAcceleration();
+        } else {
+            accelerationReadPending = 0;
+            sendAccelerationToUART();
+        }
+    }
+
+}
+
+
+void I2C1_EV_IRQHandler(void) {
+    if (accelerometerReady) {
+        handleAccelerometerRead();
+    } else {
+        handleAccelerometerSetup();
     }
 
 }
@@ -570,8 +441,9 @@ void TIM3_IRQHandler(void) {
     }
     if (it_status & TIM_SR_CC1IF) {
         TIM3->SR = ~TIM_SR_CC1IF;
-//        sendToBuffer("licznik\n\r");
-//        sendBufferToDMA();
+        if (accelerometerReady && !accelerationReadPending) {
+            readXAxisAcceleration();
+        }
     }
 }
 
@@ -585,81 +457,13 @@ int main() {
 
     configureUsartAndDma();
 
-    configureGyro();
+    configureAccelerometer();
 
-//    configureCounter();
+    saveConfigurationToAccelerometer();
 
-    sendToBuffer("break 1\n\r");
-    sendBufferToDMA();
-
-    sendToBuffer("break 2\n\r");
-    sendBufferToDMA();
-
-    saveValueToRegister();
-
-    sendToBuffer("break 3\n\r");
-    sendBufferToDMA();
-
-    __NOP();
-
-    int i = 0;
-
+    configureCounter();
 
     while (1) {
-        if (!gyroReady) {
-            __NOP();
-            continue;
-        }
-
-        i++;
-        if (i > 10000000) {
-
-//            sendToBuffer("Start reading\n\r");
-//            sendBufferToDMA();
-
-//            readFromGyro();
-            /*
-            int value = readFromGyro();
-
-
-            if (value != 0) {
-                char num[32];
-                for (int j = 0; j < 32; j++) {
-                    num[j] = 0;
-                }
-
-                intToChar(num, value, 29);
-
-                num[30] = '\n';
-                num[31] = '\r';
-
-//                sendToBuffer("dziala\n\r");
-                sendToBuffer(num);
-            } else {
-//                char num[32];
-//                intToStr(12345, num);
-
-//                int x = value;
-//                for (int j = 0; x != 0; j++) {
-//                    num[j] = (x % 10) + '0';
-//                    x /= 10;
-//                }
-//
-//                num[30] = '\n';
-//                num[31] = '\r';
-//
-//                char buf[3] = "3\n\r";
-//
-//                sendToBuffer(num);
-                sendToBuffer("nie dziala\n\r");
-//
-            }
-
-            */
-
-//            sendBufferToDMA();
-//            i = 0;
-        }
-
+        __NOP();
     }
 }
