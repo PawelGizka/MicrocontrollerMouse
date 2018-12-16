@@ -19,7 +19,15 @@
 
 #define SEND_BUFFER_SIZE 400
 
-#define MAX_WAIT_VALUE 40000
+//timing 16 000 000 Hz
+//16 000 000 / 50 000 = 320
+//prescaler set to 320, so wakeup every 1s,
+//when 16 then every 25ms
+#define COUNTER_VALUE 50000
+#define PRESCALER_VALUE 8
+
+//max wait 250 ms for I2C comunnication finish
+#define MAX_WAIT_VALUE 10
 
 int debug = 0;
 
@@ -39,6 +47,8 @@ int readXAxis = 0;
 int xAxisAcceleration = 0;
 int yAxisAcceleration = 0;
 int receivePhase = 0;
+
+int currentWaitValue = 0;
 
 volatile irq_level_t currentLevel;
 
@@ -79,7 +89,6 @@ void sendToBuffer(const char* command) {
 void sendBufferToDMA() {
     //check if we can send to DMA
     currentLevel = IRQprotectAll();
-    int wasDMABusy = 0;
     if (charsToSend > 0) {
         if ((DMA1_Stream6->CR & DMA_SxCR_EN) == 0 && (DMA1->HISR & DMA_HISR_TCIF6) == 0) {
             int tempBufferSize = charsToSend;
@@ -94,15 +103,9 @@ void sendBufferToDMA() {
 
             sendBufferPosition = 0;
             charsToSend = 0;
-        } else {
-            wasDMABusy = 1;
         }
     }
     IRQunprotectAll(currentLevel);
-
-    if (wasDMABusy) {
-//        sendToBuffer("DMA BUSY \n\r");
-    }
 }
 
 
@@ -178,7 +181,7 @@ void configureAccelerometer() {
 
     I2C1->CR1 |= I2C_CR1_PE;
 
-    //przerwania
+    //interrupts
     I2C1->CR2 |= I2C_CR2_ITEVTEN | I2C_CR2_ITERREN;
 
     NVIC_EnableIRQ(I2C1_EV_IRQn);
@@ -210,7 +213,7 @@ void saveConfigurationToAccelerometer() {
     I2C1->CR1 |= I2C_CR1_START;
 }
 
-void readXAxisAcceleration() {
+void startAccelerationRead() {
     readXAxis = 1;
     accelerationReadPending = 1;
     receivePhase = 0;
@@ -218,7 +221,7 @@ void readXAxisAcceleration() {
     I2C1->CR1 |= I2C_CR1_START;
 }
 
-void readYAxisAcceleration() {
+void continueAccelerationRead() {
     readXAxis = 0;
     accelerationReadPending = 1;
     receivePhase = 0;
@@ -233,7 +236,7 @@ void handleAccelerometerSetup() {
             sendBufferToDMA();
         }
 
-        //Zainicjuj wysyłanie 7-bitowego adresu slave’a, tryb MT
+        //send 7-bit slave address, MT mode
         I2C1->DR = LIS35DE_ADDR << 1;
     }
 
@@ -246,10 +249,10 @@ void handleAccelerometerSetup() {
         I2C1->CR2 |= I2C_CR2_ITBUFEN;
         dataWasSend = 1;
 
-        //Skasuj bit ADDR przez odczytanie rejestru SR2 po odczytaniu rejestru SR1
+        //delete ADDR bit by reading SR2 after reading SR1 register
         I2C1->SR2;
 
-        //Zainicjuj wysyłanie 8-bitowego numeru rejestru slave’a
+        //initiate sending 8-bit slave register number
         I2C1->DR = CTRL_REG1;
     }
 
@@ -268,7 +271,7 @@ void handleAccelerometerSetup() {
         uint32_t xEnabled = 1;
         uint32_t reqValue =  (zEnabled | yEnabled | xEnabled | powerUp);
 
-        //Wstaw do kolejki nadawczej 8-bitową wartość zapisywaną do rejestru slave’a
+        //insert to sending queue 8-bit slave register value
         I2C1->DR = reqValue;
     }
 
@@ -291,26 +294,26 @@ void handleAccelerometerSetup() {
 void handleAccelerometerRead() {
     if (I2C1->SR1 & I2C_SR1_SB) {
         if (!receivePhase) {
-            //1
+            //phase 1
             if (debug) {
                 sendToBuffer("I2C_SR1_SB 1\n\r");
                 sendBufferToDMA();
             }
 
-            //Zainicjuj wysyłanie 7-bitowego adresu slave’a, tryb MT
+            //send 7-bit slave address, MT mode
             I2C1->DR = LIS35DE_ADDR << 1;
         }  else {
-            //4
+            //phase 4
             if (debug) {
                 sendToBuffer("I2C_SR1_SB 4\n\r");
                 sendBufferToDMA();
             }
 
-            //Zainicjuj wysyłanie 7-bitowego adresu slave’a, tryb MR
+            //send 7-bit slave address, MR mode
             I2C1->DR = (LIS35DE_ADDR << 1) | 1U;
 
-            //Ustaw, czy po odebraniu pierwszego bajtu ma być wysłany sygnał ACK czy NACK
-            //Ponieważ ma być odebrany tylko jeden bajt, ustaw wysłanie sygnału NACK, zerując bit ACK
+            //send NACK after first byte received,
+            //because only one byte is neded
             I2C1->CR1 &= ~I2C_CR1_ACK;
         }
 
@@ -318,24 +321,23 @@ void handleAccelerometerRead() {
 
     if (I2C1->SR1 & I2C_SR1_ADDR) {
         if (!receivePhase) {
-            //2
+            //phase 2
             if (debug) {
                 sendToBuffer("I2C_SR1_ADDR 2\n\r");
                 sendBufferToDMA();
             }
 
-            //Skasuj bit ADDR przez odczytanie rejestru SR2 po odczytaniu rejestru SR1
+            //delete ADDR bit by reading SR2 register after reading SR1 register
             I2C1->SR2;
 
-            //Zainicjuj wysyłanie numeru rejestru slave’a
-
+            //send slave register number
             if (readXAxis) {
                 I2C1->DR = OUT_X;
             } else {
                 I2C1->DR = OUT_Y;
             }
         } else {
-            //5
+            //phase 5
             if (debug) {
                 sendToBuffer("I2C_SR1_ADDR 5\n\r");
                 sendBufferToDMA();
@@ -343,18 +345,17 @@ void handleAccelerometerRead() {
 
             I2C1->CR2 |= I2C_CR2_ITBUFEN;
 
-            //Skasuj bit ADDR
+            //delete ADDR bit
             I2C1->SR2;
 
-            //Zainicjuj transmisję sygnału STOP, aby został wysłany po
-            //odebraniu ostatniego (w tym przypadku jedynego) bajtu
+            //send STOP signal when final byte has been received
             I2C1->CR1 |= I2C_CR1_STOP;
         }
     }
 
 
     if (I2C1->SR1 & I2C_SR1_BTF) {
-        //3
+        //phase 3
         if (debug) {
             sendToBuffer("I2C_SR1_BTF 3\n\r");
             sendBufferToDMA();
@@ -362,19 +363,19 @@ void handleAccelerometerRead() {
 
         receivePhase = 1;
 
-        //Zainicjuj transmisję sygnału REPEATED START
+        //send REPEATED START signal
         I2C1->CR1 |= I2C_CR1_START;
 
     }
 
     if (I2C1->SR1 & I2C_SR1_RXNE) {
-        //6
+        //phase 6
         if (debug) {
             sendToBuffer("I2C_SR1_RXNE 6\n\r");
             sendBufferToDMA();
         }
 
-        //Odczytaj odebraną 8-bitową wartość
+        //read received 8-bit acceleration value
         if (readXAxis) {
             xAxisAcceleration = I2C1->DR;
         } else {
@@ -382,7 +383,7 @@ void handleAccelerometerRead() {
         }
 
         if (readXAxis) {
-            readYAxisAcceleration();
+            continueAccelerationRead();
         } else {
             accelerationReadPending = 0;
             sendAccelerationToUART();
@@ -402,9 +403,14 @@ void I2C1_EV_IRQHandler(void) {
 }
 
 void I2C1_ER_IRQHandler(void) {
-
     sendToBuffer("Error at I2C occur\n\r");
     sendBufferToDMA();
+
+    I2C1->CR1 |= I2C_CR1_STOP;
+
+    if (!accelerometerReady) {
+        saveConfigurationToAccelerometer();
+    }
 }
 
 void configureCounter() {
@@ -415,8 +421,8 @@ void configureCounter() {
     TIM3->CR1 = 0;
 
     //Skonfigurowanie preskalera i zakresu zliczania
-    TIM3->PSC = 20;
-    TIM3->ARR = 3200000000;//10s
+    TIM3->PSC = PRESCALER_VALUE;
+    TIM3->ARR = COUNTER_VALUE;//10s
 
     //wymuszenie zdarzenia uaktualnienia
     TIM3->EGR = TIM_EGR_UG;
@@ -441,9 +447,33 @@ void TIM3_IRQHandler(void) {
     }
     if (it_status & TIM_SR_CC1IF) {
         TIM3->SR = ~TIM_SR_CC1IF;
-        if (accelerometerReady && !accelerationReadPending) {
-            readXAxisAcceleration();
+        if (accelerometerReady) {
+            currentWaitValue++;
+
+            if (accelerationReadPending) {
+                if (currentWaitValue > MAX_WAIT_VALUE) {
+                    //send STOP to reset I2C bus,
+                    I2C1->CR1 |= I2C_CR1_STOP;
+                    currentWaitValue = 0;
+                    startAccelerationRead();
+                }
+            } else {
+                currentWaitValue = 0;
+                startAccelerationRead();
+            }
+
+        } else {
+            currentWaitValue++;
+
+            if (currentWaitValue > MAX_WAIT_VALUE) {
+                //send STOP to reset I2C bus,
+                I2C1->CR1 |= I2C_CR1_STOP;
+                currentWaitValue = 0;
+                saveConfigurationToAccelerometer();
+            }
         }
+
+
     }
 }
 
