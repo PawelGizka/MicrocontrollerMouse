@@ -11,6 +11,9 @@
 #define I2C_SPEED_HZ 100000
 #define PCLK1_MHZ 16
 
+#define AT_MODE_GPIO GPIOA
+#define AT_MODE_PIN 0
+
 #define CTRL_REG1 0x20
 #define OUT_X 0x29
 #define OUT_Y 0x2B
@@ -477,6 +480,24 @@ void TIM3_IRQHandler(void) {
     }
 }
 
+void EXTI0_IRQHandler(void) {
+    EXTI->PR = EXTI_PR_PR0;
+
+    sendToBuffer("click\n\r");
+    sendBufferToDMA();
+}
+
+void configureAtModeButton() {
+    GPIOinConfigure(AT_MODE_GPIO,
+                    AT_MODE_PIN,
+                    GPIO_PuPd_DOWN,
+                    EXTI_Mode_Interrupt,
+                    EXTI_Trigger_Rising);
+
+
+    NVIC_EnableIRQ(EXTI0_IRQn);
+}
+
 
 int main() {
     //gpio enable
@@ -486,6 +507,8 @@ int main() {
     RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
 
     configureUsartAndDma();
+
+    configureAtModeButton();
 
     configureAccelerometer();
 
